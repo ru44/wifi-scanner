@@ -60,6 +60,10 @@ Campus       5 GHz  112   -71 dBm  ▇▆▄▃▂▁   weakening
 
 Options: `--interval SECS` (default 3), `--rounds N` (default: until Ctrl-C), `--csv PATH` for a time series.
 
+### See it on the web
+
+**[Wi-Fi Airspace →](https://ru44.github.io/wifi-scanner/)** draws your scan on the radio spectrum: each network as a curve whose height is its signal and whose width is its channel, so crowding and overlap are visible at a glance, alongside a band split, security posture, and roaming view. Paste the output of `wifi-scanner scan --json` into the page to render your own surroundings — everything runs in your browser, nothing is uploaded. (Source: [`docs/index.html`](docs/index.html).)
+
 ### `bench` — authorized-lab auth timing
 Takes a password **you already know** and times how long each allow-listed network takes to authenticate it. It is consent-gated (type `allow`, or pass `--authorized`), refuses to run against anything outside `lab-ssids.txt`, and finishes by leaving the machine in an honest, documented state. See `wifi-scanner bench --help` territory in the source header for all flags (`--repeats`, `--csv`, `--no-shuffle`, `--leave-disconnected`, `--password-argv`).
 

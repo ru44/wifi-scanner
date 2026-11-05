@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="An interactive spectrum view of the Wi-Fi networks around you, from wifi-scanner scan --json output.">
+<title>Wi-Fi Airspace</title>
+<style>
+  html { -webkit-text-size-adjust: 100%; }
+  :root { padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<style>
+  /* Layout: a spectrum-analyzer hero over scannable summary cards.
+     Networks are colored by band (categorical); security uses the
+     reserved status palette. Color comes from role tokens only. */
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --card:        #ffffff;
+    --text:        #0b0b0b;
+    --text-dim:    #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --axis:        #c3c2b7;
+    --border:      rgba(11,11,11,0.10);
+    /* band hues (validated categorical slots 1/2/3) */
+    --b24:         #2a78d6;
+    --b5:          #eb6834;
+    --b6:          #1baf7a;
+    /* status (fixed, never themed) */
+    --good:        #0ca30c;
+    --warn:        #fab219;
+    --crit:        #d03b3b;
+    --neutral:     #6b6a66;
+    --fill-soft:   rgba(42,120,214,0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:      #0d0d0d;
+      --surface:   #15181d;
+      --card:      #1c1f24;
+      --text:      #f0efec;
+      --text-dim:  #c3c2b7;
+      --muted:     #8f8e88;
+      --grid:      #2c2c2a;
+      --axis:      #383835;
+      --border:    rgba(255,255,255,0.10);
+      --b24:       #3987e5;
+      --b5:        #d95926;
+      --b6:        #199e70;
+      --neutral:   #a8a7a1;
+      --fill-soft: rgba(57,135,229,0.14);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:      #0d0d0d;
+    --surface:   #15181d;
+    --card:      #1c1f24;
+    --text:      #f0efec;
+    --text-dim:  #c3c2b7;
+    --muted:     #8f8e88;
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+    --border:    rgba(255,255,255,0.10);
+    --b24:       #3987e5;
+    --b5:        #d95926;
+    --b6:        #199e70;
+    --neutral:   #a8a7a1;
+    --fill-soft: rgba(57,135,229,0.14);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--page);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 28px 56px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
+
+  header h1 {
+    font-size: clamp(1.6rem, 4vw, 2.3rem);
+    line-height: 1.1; margin: 0; letter-spacing: -0.02em; text-wrap: balance;
+  }
+  header p { margin: 6px 0 0; color: var(--text-dim); max-width: 60ch; }
+  .src {
+    margin-top: 10px; font-size: 0.8rem; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .src code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 6px; color: var(--text-dim);
+  }
+
+  .tiles {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
+  }
+  .tile {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px; min-width: 0;
+  }
+  .tile .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .tile .v { font-size: 1.7rem; line-height: 1.1; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .tile .u { font-size: 0.8rem; color: var(--text-dim); margin-top: 2px; }
+  .tile .v.good { color: var(--good); }
+
+  .panel {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 18px 18px 14px; min-width: 0;
+  }
+  .panel h2 {
+    font-size: 1.02rem; margin: 0 0 2px; letter-spacing: -0.01em;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  }
+  .panel .sub { color: var(--muted); font-size: 0.82rem; font-weight: 400; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 4px; font-size: 0.8rem; color: var(--text-dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  .spectrum { width: 100%; }
+  .spectrum svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .curve { cursor: pointer; transition: opacity .08s ease; }
+  .curve:hover { opacity: 1 !important; }
+  .grid-line { stroke: var(--grid); stroke-width: 1; }
+  .axis-line { stroke: var(--axis); stroke-width: 1; }
+  .tick-txt { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .tick-txt.key { fill: var(--text-dim); font-weight: 600; }
+  .peak-lbl { fill: var(--text); font-size: 11px; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+  .rec-band { fill: var(--good); opacity: 0.08; }
+  .rec-edge { stroke: var(--good); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.5; }
+  .rec-txt { fill: var(--good); font-size: 10.5px; font-weight: 600; }
+  .curve { opacity: 0.94; }
+  .curve:hover { opacity: 1 !important; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .bars { display: flex; flex-direction: column; gap: 9px; margin-top: 8px; }
+  .barrow { display: grid; grid-template-columns: 88px 1fr auto; align-items: center; gap: 10px; font-size: 0.86rem; }
+  .barrow .lab { color: var(--text-dim); min-width: 0; }
+  .track { height: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+  .track > i { display: block; height: 100%; border-radius: 4px 0 0 4px; }
+  .barrow .n { font-variant-numeric: tabular-nums; color: var(--text); min-width: 1.6em; text-align: right; }
+  .note { font-size: 0.8rem; color: var(--muted); margin-top: 10px; }
+
+  .stackbar { display: flex; height: 28px; border-radius: 7px; overflow: hidden; gap: 2px; background: var(--surface); margin-top: 6px; }
+  .stackbar > i { display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.78rem; font-weight: 600; min-width: 0; }
+
+  .roam { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .roam .r { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 0.9rem; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .roam .r:last-child { border-bottom: 0; }
+  .roam .nm { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .chip { font-size: 0.74rem; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .places { color: var(--text-dim); font-size: 0.84rem; }
+
+  textarea {
+    width: 100%; min-height: 110px; resize: vertical; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    padding: 11px 12px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.82rem; line-height: 1.45;
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  button {
+    font: inherit; font-size: 0.88rem; font-weight: 600; cursor: pointer;
+    border-radius: 9px; border: 1px solid var(--border); padding: 8px 15px;
+    background: var(--card); color: var(--text);
+  }
+  button.primary { background: var(--b24); border-color: transparent; color: #fff; }
+  button:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--b24); outline-offset: 2px; }
+  .err { color: var(--crit); font-size: 0.84rem; min-height: 1.2em; }
+
+  details.tablewrap { margin-top: 4px; }
+  details.tablewrap > summary { cursor: pointer; font-weight: 600; font-size: 0.92rem; padding: 4px 0; }
+  .scroll { overflow-x: auto; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td.ssid { white-space: normal; min-width: 140px; max-width: 220px; overflow-wrap: anywhere; }
+  td.num { text-align: right; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
+
+  #tip {
+    position: fixed; z-index: 30; pointer-events: none; opacity: 0;
+    transition: opacity .08s ease; max-width: 260px;
+    background: var(--card); color: var(--text); border: 1px solid var(--border);
+    border-radius: 9px; padding: 9px 11px; font-size: 0.82rem; line-height: 1.4;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+  }
+  #tip .t-nm { font-weight: 700; overflow-wrap: anywhere; }
+  #tip .t-meta { color: var(--text-dim); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  #tip .t-sec { margin-top: 4px; font-size: 0.78rem; }
+
+  footer { color: var(--muted); font-size: 0.8rem; border-top: 1px solid var(--border); padding-top: 14px; }
+  footer code { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  @media (max-width: 620px) {
+    .cols { grid-template-columns: 1fr; }
+    .barrow { grid-template-columns: 76px 1fr auto; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Wi-Fi Airspace</h1>
+    <p>Every access point around you, drawn on the radio spectrum: how tall is its signal, how wide is its channel, and where the air is crowded.</p>
+    <div class="src">From <code>wifi-scanner scan --json</code> · <span id="asof">sample capture</span></div>
+  </header>
+
+  <section class="tiles" id="tiles" aria-label="Summary"></section>
+
+  <section class="panel" id="panel24">
+    <h2>2.4 GHz band <span class="sub">channels overlap — only 1, 6 and 11 stay clear of each other</span></h2>
+    <div class="legend" id="leg24"></div>
+    <div class="spectrum" id="spec24"></div>
+  </section>
+
+  <section class="panel" id="panel5">
+    <h2>5 GHz band <span class="sub">wider channels, little overlap, shorter reach</span></h2>
+    <div class="spectrum" id="spec5"></div>
+  </section>
+
+  <section class="panel" id="panel6" hidden>
+    <h2>6 GHz band <span class="sub">newest band (Wi-Fi 6E / 7)</span></h2>
+    <div class="spectrum" id="spec6"></div>
+  </section>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>Bands in use</h2>
+      <div class="stackbar" id="bandbar"></div>
+      <div class="legend" id="bandleg"></div>
+    </section>
+    <section class="panel">
+      <h2>Security posture</h2>
+      <div class="bars" id="secbars"></div>
+      <div class="note" id="secnote"></div>
+    </section>
+  </div>
+
+  <section class="panel" id="roampanel">
+    <h2>Roaming networks <span class="sub">one name living on several radios</span></h2>
+    <div class="roam" id="roam"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Use your own scan</h2>
+    <p class="note" style="margin:2px 0 10px">Paste the output of <code>wifi-scanner scan --json</code> to redraw this page for your surroundings. Nothing leaves your browser.</p>
+    <textarea id="json-input" spellcheck="false" aria-label="Paste scan --json here" placeholder='[ {"ssid": "...", "channel": 6, "freq_mhz": 2437, "bandwidth_mhz": 20, "signal_pct": 70, "security": "WPA2"}, ... ]'></textarea>
+    <div class="row">
+      <button class="primary" id="render-btn">Visualize</button>
+      <button id="reset-btn">Reset to sample</button>
+      <span class="err" id="input-err" role="status"></span>
+    </div>
+  </section>
+
+  <details class="tablewrap panel">
+    <summary>All access points (table)</summary>
+    <div class="scroll"><table id="aptable"></table></div>
+  </details>
+
+  <footer>
+    Signal is shown as approximate dBm (taller = stronger), derived from the scan's 0–100 quality figure. Channel width sets each curve's breadth. For the true dBm of the link you're on, run <code>wifi-scanner link</code>.
+  </footer>
+</div>
+
+<div id="tip" role="tooltip" aria-hidden="true"></div>
+
+<script>
+"use strict";
+
+/* Embedded sample: a real capture from `wifi-scanner scan --json`. */
+const SAMPLE = [
+  {"ssid":"Amanii🌷","bssid":"AA:23:FB:53:B8:5E","band":"2.4 GHz","channel":6,"freq_mhz":2437,"bandwidth_mhz":20,"signal_pct":70,"signal_dbm_approx":-65,"security":"WPA2"},
+  {"ssid":"DIRECT-25-HP M141 LaserJet","bssid":"32:13:8B:0A:1E:25","band":"2.4 GHz","channel":8,"freq_mhz":2447,"bandwidth_mhz":20,"signal_pct":70,"signal_dbm_approx":-65,"security":"WPA2"},
+  {"ssid":"Galaxy S22 3014","bssid":"3A:AC:82:06:28:7A","band":"2.4 GHz","channel":1,"freq_mhz":2412,"bandwidth_mhz":20,"signal_pct":70,"signal_dbm_approx":-65,"security":"WPA2"},
+  {"ssid":"DIRECT-b1-HP M141 LaserJet","bssid":"26:FB:E3:0D:57:B1","band":"2.4 GHz","channel":6,"freq_mhz":2437,"bandwidth_mhz":20,"signal_pct":65,"signal_dbm_approx":-68,"security":"WPA2"},
+  {"ssid":"DIRECT-a5-HP M141 LaserJet","bssid":"12:B6:76:A7:3C:A5","band":"2.4 GHz","channel":8,"freq_mhz":2447,"bandwidth_mhz":20,"signal_pct":64,"signal_dbm_approx":-68,"security":"WPA2"},
+  {"ssid":"H155-383_FAA6","bssid":"62:49:A9:A6:FA:C6","band":"5 GHz","channel":36,"freq_mhz":5180,"bandwidth_mhz":80,"signal_pct":62,"signal_dbm_approx":-69,"security":"WPA2"},
+  {"ssid":"H155-383_FAA6_5G","bssid":"62:49:A9:A6:FA:CA","band":"5 GHz","channel":36,"freq_mhz":5180,"bandwidth_mhz":80,"signal_pct":62,"signal_dbm_approx":-69,"security":"WPA2"},
+  {"ssid":"DIRECT-GLMSImsDX","bssid":"8E:1D:96:EC:37:EA","band":"5 GHz","channel":157,"freq_mhz":5785,"bandwidth_mhz":20,"signal_pct":59,"signal_dbm_approx":-71,"security":"WPA2"},
+  {"ssid":"ZAIN5G_4EDC10","bssid":"30:E7:BC:4E:DC:0E","band":"5 GHz","channel":112,"freq_mhz":5560,"bandwidth_mhz":80,"signal_pct":44,"signal_dbm_approx":-78,"security":"WPA2"},
+  {"ssid":"TP-Link_90BA_EXT","bssid":"30:68:93:6D:16:E6","band":"2.4 GHz","channel":3,"freq_mhz":2422,"bandwidth_mhz":40,"signal_pct":40,"signal_dbm_approx":-80,"security":"WPA2"},
+  {"ssid":"سِـلــيٰ","bssid":"FA:31:4E:83:C3:EC","band":"2.4 GHz","channel":6,"freq_mhz":2437,"bandwidth_mhz":20,"signal_pct":40,"signal_dbm_approx":-80,"security":"WPA2"},
+  {"ssid":"عزوز🤍","bssid":"F6:6B:57:7B:68:EC","band":"2.4 GHz","channel":6,"freq_mhz":2437,"bandwidth_mhz":20,"signal_pct":40,"signal_dbm_approx":-80,"security":"WPA2"},
+  {"ssid":"iPhone","bssid":"1A:2F:AD:3A:B7:5B","band":"2.4 GHz","channel":6,"freq_mhz":2437,"bandwidth_mhz":20,"signal_pct":39,"signal_dbm_approx":-81,"security":"WPA2"},
+  {"ssid":"iPhone. ","bssid":"EE:86:FF:CA:04:5A","band":"2.4 GHz","channel":6,"freq_mhz":2437,"bandwidth_mhz":20,"signal_pct":32,"signal_dbm_approx":-84,"security":"WPA2"},
+  {"ssid":"Ahmed2 5G","bssid":"C8:9C:BB:2C:CA:0D","band":"5 GHz","channel":112,"freq_mhz":5560,"bandwidth_mhz":80,"signal_pct":30,"signal_dbm_approx":-85,"security":"WPA2"},
+  {"ssid":"Hyundai37c486","bssid":"6C:02:4A:22:E1:8B","band":"5 GHz","channel":36,"freq_mhz":5180,"bandwidth_mhz":40,"signal_pct":22,"signal_dbm_approx":-89,"security":"WPA2 WPA3"},
+  {"ssid":"STC_EAP","bssid":"CA:9C:BB:1C:CA:0D","band":"5 GHz","channel":112,"freq_mhz":5560,"bandwidth_mhz":80,"signal_pct":22,"signal_dbm_approx":-89,"security":"WPA1 WPA2 802.1X"},
+  {"ssid":"PROJ9b6473","bssid":"0E:65:9A:9B:64:73","band":"5 GHz","channel":36,"freq_mhz":5180,"bandwidth_mhz":80,"signal_pct":20,"signal_dbm_approx":-90,"security":"WPA2"},
+  {"ssid":"TOTOLINK_4G","bssid":"1C:56:8E:1C:46:08","band":"2.4 GHz","channel":11,"freq_mhz":2462,"bandwidth_mhz":0,"signal_pct":19,"signal_dbm_approx":-91,"security":"WPA1"}
+];
+
+const LS_KEY = "airspace-scan-v1";
+const CLEAN24 = [1, 6, 11];
+const DBM_FLOOR = -92, DBM_CEIL = -30;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function bandOf(ap) {
+  const f = ap.freq_mhz || 0;
+  if (ap.band === "2.4 GHz" || (f >= 2400 && f <= 2500)) return "2.4";
+  if (ap.band === "5 GHz" || (f >= 4900 && f <= 5895)) return "5";
+  if (ap.band === "6 GHz" || (f >= 5925 && f <= 7125)) return "6";
+  return "?";
+}
+function bandVar(b) { return b === "2.4" ? "--b24" : b === "5" ? "--b5" : "--b6"; }
+function bandLabel(b) { return b === "2.4" ? "2.4 GHz" : b === "5" ? "5 GHz" : b === "6" ? "6 GHz" : "other"; }
+
+function dbmOf(ap) {
+  if (typeof ap.signal_dbm_approx === "number") return ap.signal_dbm_approx;
+  if (typeof ap.signal_pct === "number") return Math.round(ap.signal_pct / 2 - 100);
+  return DBM_FLOOR;
+}
+function widthOf(ap) { return ap.bandwidth_mhz && ap.bandwidth_mhz > 0 ? ap.bandwidth_mhz : 20; }
+
+/* security -> {status, enterprise, label} */
+function secClass(sec) {
+  const s = (sec || "").trim();
+  let status, label;
+  if (s === "" || s === "Open") { status = "crit"; label = "Open"; }
+  else if (/WEP/.test(s)) { status = "crit"; label = "WEP"; }
+  else if (/WPA3|SAE/.test(s)) { status = "good"; label = "WPA3"; }
+  else if (/WPA2/.test(s)) { status = "good"; label = "WPA2"; }
+  else if (/WPA/.test(s)) { status = "warn"; label = "WPA"; }
+  else { status = "warn"; label = s || "?"; }
+  return { status, label, enterprise: /802\.1X/.test(s) };
+}
+function statusVar(st) { return st === "good" ? "--good" : st === "warn" ? "--warn" : "--crit"; }
+
+let STATE = { aps: [] };
+
+function normalize(list) {
+  return list.map((ap) => ({
+    ssid: (ap.ssid && String(ap.ssid).trim()) || "(hidden)",
+    bssid: ap.bssid || "",
+    channel: ap.channel || 0,
+    freq_mhz: ap.freq_mhz || 0,
+    width: widthOf(ap),
+    dbm: dbmOf(ap),
+    pct: typeof ap.signal_pct === "number" ? ap.signal_pct : null,
+    security: ap.security || "Open",
+    b: bandOf(ap),
+  }));
+}
+
+/* ---- computations ---- */
+function recommend24(aps) {
+  const b24 = aps.filter((a) => a.b === "2.4" && a.channel > 0);
+  if (!b24.length) return null;
+  let best = null, bestLoad = Infinity;
+  for (const c of CLEAN24) {
+    const load = b24.filter((a) => Math.abs(a.channel - c) <= 4).length;
+    if (load < bestLoad) { bestLoad = load; best = c; }
+  }
+  return best;
+}
+function busiestChannel(aps) {
+  const map = new Map();
+  for (const a of aps) {
+    if (!a.channel) continue;
+    const key = a.b + "/" + a.channel;
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  let top = null, n = 0;
+  for (const [k, v] of map) if (v > n) { n = v; top = k; }
+  if (!top) return null;
+  const [b, ch] = top.split("/");
+  return { band: b, channel: +ch, count: n };
+}
+function posture(aps) {
+  const p = { open: 0, wep: 0, wpa1: 0, wpa2: 0, wpa3: 0, ent: 0 };
+  for (const a of aps) {
+    const s = a.security;
+    if (s === "Open" || s === "") p.open++;
+    if (/WEP/.test(s)) p.wep++;
+    if (/WPA3|SAE/.test(s)) p.wpa3++;
+    if (/WPA2/.test(s)) p.wpa2++;
+    if (/WPA1/.test(s)) p.wpa1++;
+    if (/802\.1X/.test(s)) p.ent++;
+  }
+  return p;
+}
+function roamingGroups(aps) {
+  const by = new Map();
+  for (const a of aps) {
+    if (a.ssid === "(hidden)") continue;
+    if (!by.has(a.ssid)) by.set(a.ssid, []);
+    by.get(a.ssid).push(a);
+  }
+  const out = [];
+  for (const [ssid, list] of by) {
+    const bssids = new Set(list.map((x) => x.bssid).filter(Boolean));
+    if (bssids.size < 2) continue;
+    const places = [...list].sort((x, y) => x.freq_mhz - y.freq_mhz)
+      .map((x) => `${bandLabel(x.b)} ch${x.channel}`);
+    out.push({ ssid, radios: bssids.size, places });
+  }
+  out.sort((a, b) => b.radios - a.radios || a.ssid.localeCompare(b.ssid));
+  return out;
+}
+function distinctSsids(aps) {
+  return new Set(aps.filter((a) => a.ssid !== "(hidden)").map((a) => a.ssid)).size;
+}
+
+/* ---- render: tiles ---- */
+function renderTiles(aps) {
+  const rec = recommend24(aps);
+  const busy = busiestChannel(aps);
+  const p = posture(aps);
+  const modern = aps.filter((a) => /WPA2|WPA3/.test(a.security)).length;
+  const pctModern = aps.length ? Math.round((modern / aps.length) * 100) : 0;
+  const tiles = [
+    { k: "Access points", v: aps.length, u: distinctSsids(aps) + " network names" },
+    { k: "Busiest channel", v: busy ? "ch " + busy.channel : "—", u: busy ? `${busy.count} APs · ${bandLabel(busy.band)}` : "" },
+    { k: "Clearest 2.4 GHz", v: rec ? "ch " + rec : "—", u: rec ? "of 1 / 6 / 11" : "no 2.4 GHz", good: true },
+    { k: "Modern security", v: pctModern + "%", u: `${modern} of ${aps.length} on WPA2/WPA3` },
+    { k: "Open / WEP", v: p.open + p.wep, u: (p.open + p.wep) ? "no real encryption" : "none — good" },
+  ];
+  $("tiles").innerHTML = tiles.map((t) =>
+    `<div class="tile"><div class="k">${esc(t.k)}</div>` +
+    `<div class="v${t.good ? " good" : ""}">${esc(t.v)}</div>` +
+    `<div class="u">${esc(t.u)}</div></div>`
+  ).join("");
+}
+
+/* ---- render: spectrum (SVG bell curves, measured to container width) ---- */
+function spectrumSVG(aps, b, mount, range) {
+  const el = $(mount);
+  const W = Math.max(el.clientWidth || 640, 320);
+  const H = b === "2.4" ? 270 : 230;
+  const m = { l: 38, r: 14, t: 22, b: 30 };
+  const plotW = W - m.l - m.r, plotH = H - m.t - m.b;
+  const y0 = m.t + plotH;            // baseline
+  const lo = range.lo, hi = range.hi; // dBm view window
+
+  const list = aps.filter((a) => a.b === b && a.freq_mhz > 0);
+  // frequency domain
+  let fMin, fMax, ticks;
+  if (b === "2.4") {
+    fMin = 2402; fMax = 2487;
+    ticks = [1,2,3,4,5,6,7,8,9,10,11,12,13].map((c) => ({ c, f: 2407 + 5 * c }));
+    if (list.some((a) => a.channel === 14)) ticks.push({ c: 14, f: 2484 });
+  } else {
+    const fs = list.map((a) => a.freq_mhz);
+    fMin = Math.min(...fs) - 50; fMax = Math.max(...fs) + 50;
+    if (!isFinite(fMin)) { fMin = b === "5" ? 5150 : 5945; fMax = b === "5" ? 5850 : 6425; }
+    const chans = [...new Set(list.map((a) => a.channel))].sort((x, y) => x - y);
+    ticks = chans.map((c) => ({ c, f: list.find((a) => a.channel === c).freq_mhz }));
+  }
+  const xOf = (f) => m.l + ((f - fMin) / (fMax - fMin)) * plotW;
+  const yOf = (dbm) => y0 - ((clamp(dbm, lo, hi) - lo) / (hi - lo)) * plotH;
+  const color = getComputedStyle(document.documentElement).getPropertyValue(bandVar(b)).trim();
+  const gid = "grad-" + b.replace(".", "");
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${bandLabel(b)} spectrum, ${list.length} access points">`;
+  svg += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0" stop-color="${color}" stop-opacity="0.32"/>` +
+    `<stop offset="0.82" stop-color="${color}" stop-opacity="0.05"/>` +
+    `<stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>`;
+
+  // recommended-channel highlight (2.4 only)
+  if (b === "2.4") {
+    const rec = recommend24(aps);
+    if (rec) {
+      const cx = xOf(2407 + 5 * rec), half = xOf(2432) - xOf(2422); // ~10 MHz
+      const x1 = cx - half, x2 = cx + half;
+      svg += `<rect class="rec-band" x="${x1.toFixed(1)}" y="${m.t}" width="${(half * 2).toFixed(1)}" height="${plotH}"/>`;
+      svg += `<line class="rec-edge" x1="${x1.toFixed(1)}" y1="${m.t}" x2="${x1.toFixed(1)}" y2="${y0}"/>`;
+      svg += `<line class="rec-edge" x1="${x2.toFixed(1)}" y1="${m.t}" x2="${x2.toFixed(1)}" y2="${y0}"/>`;
+      svg += `<text class="rec-txt" x="${cx.toFixed(1)}" y="${(m.t + 11).toFixed(1)}" text-anchor="middle">clearest · ch ${rec}</text>`;
+    }
+  }
+
+  // horizontal dBm gridlines within the view window
+  for (let d = -30; d >= -95; d -= 10) {
+    if (d > hi || d < lo) continue;
+    const y = yOf(d).toFixed(1);
+    svg += `<line class="grid-line" x1="${m.l}" y1="${y}" x2="${W - m.r}" y2="${y}"/>`;
+    svg += `<text class="tick-txt" x="${m.l - 6}" y="${(+y + 3).toFixed(1)}" text-anchor="end">${d}</text>`;
+  }
+  svg += `<text class="tick-txt" x="${m.l - 6}" y="${(m.t - 9)}" text-anchor="end">dBm</text>`;
+  svg += `<line class="axis-line" x1="${m.l}" y1="${y0}" x2="${W - m.r}" y2="${y0}"/>`;
+  // channel ticks
+  for (const t of ticks) {
+    const x = xOf(t.f).toFixed(1);
+    const key = b === "2.4" && CLEAN24.includes(t.c);
+    svg += `<text class="tick-txt${key ? " key" : ""}" x="${x}" y="${y0 + 15}" text-anchor="middle">${t.c}</text>`;
+  }
+  svg += `<text class="tick-txt" x="${((m.l + W - m.r) / 2).toFixed(1)}" y="${H - 1}" text-anchor="middle">channel</text>`;
+
+  // curves — weakest first so stronger peaks sit on top
+  [...list].sort((a, c) => a.dbm - c.dbm).forEach((a) => {
+    const f0 = a.freq_mhz, w = a.width;
+    const sigma = w / 2.2, span = w * 1.7, steps = 44;
+    let d = `M ${xOf(f0 - span).toFixed(1)} ${y0.toFixed(1)}`;
+    for (let s = 0; s <= steps; s++) {
+      const f = (f0 - span) + (2 * span) * (s / steps);
+      const amp = Math.exp(-((f - f0) ** 2) / (2 * sigma * sigma));
+      const dbm = lo + (a.dbm - lo) * amp;
+      d += ` L ${xOf(f).toFixed(1)} ${yOf(dbm).toFixed(1)}`;
+    }
+    d += ` L ${xOf(f0 + span).toFixed(1)} ${y0.toFixed(1)} Z`;
+    svg += `<path class="curve" data-ap="${aps.indexOf(a)}" d="${d}" fill="url(#${gid})" ` +
+      `stroke="${color}" stroke-width="1.6" stroke-opacity="0.92" stroke-linejoin="round"/>`;
+  });
+
+  // direct labels, strongest first, skipping any that would collide
+  const placed = [];
+  [...list].sort((a, c) => c.dbm - a.dbm).forEach((a) => {
+    if (placed.length >= 6) return;
+    const x = xOf(a.freq_mhz);
+    if (placed.some((px) => Math.abs(px - x) < 70)) return;
+    const y = clamp(yOf(a.dbm) - 7, m.t + 11, y0 - 5);
+    const xc = clamp(x, m.l + 16, W - m.r - 16);
+    svg += `<text class="peak-lbl" x="${xc.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle">${esc(trunc(a.ssid, 15))}</text>`;
+    placed.push(x);
+  });
+
+  svg += `</svg>`;
+  el.innerHTML = svg;
+  el.querySelectorAll(".curve").forEach((path) => {
+    path.addEventListener("pointerenter", (e) => showTip(e, aps[+path.dataset.ap]));
+    path.addEventListener("pointermove", moveTip);
+    path.addEventListener("pointerleave", hideTip);
+    path.addEventListener("pointerdown", (e) => showTip(e, aps[+path.dataset.ap]));
+  });
+}
+
+/* Shared dBm view window: fixed floor, ceiling follows the strongest AP so
+   weak-signal environments don't render as mostly-empty plots. */
+function signalRange(aps) {
+  const dbms = aps.map((a) => a.dbm);
+  const gmax = dbms.length ? Math.max(...dbms) : -50;
+  return { lo: -95, hi: clamp(Math.ceil((gmax + 6) / 5) * 5, -80, -30) };
+}
+
+function trunc(s, n) { return [...s].length <= n ? s : [...s].slice(0, n - 1).join("") + "…"; }
+
+/* ---- tooltip ---- */
+const tip = $("tip");
+function showTip(e, a) {
+  if (!a) return;
+  tip.innerHTML =
+    `<div class="t-nm">${esc(a.ssid)}</div>` +
+    `<div class="t-meta">${bandLabel(a.b)} · ch ${a.channel} · ${a.width} MHz · ~${a.dbm} dBm${a.pct != null ? " (" + a.pct + "%)" : ""}</div>` +
+    `<div class="t-sec">${esc(a.security)}</div>`;
+  tip.style.opacity = "1"; tip.setAttribute("aria-hidden", "false");
+  moveTip(e);
+}
+function moveTip(e) {
+  const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if (x + w > innerWidth - 8) x = e.clientX - w - pad;
+  if (y + h > innerHeight - 8) y = e.clientY - h - pad;
+  tip.style.left = Math.max(8, x) + "px";
+  tip.style.top = Math.max(8, y) + "px";
+}
+function hideTip() { tip.style.opacity = "0"; tip.setAttribute("aria-hidden", "true"); }
+
+/* ---- bands + security + roaming + table ---- */
+function renderBands(aps) {
+  const order = ["2.4", "5", "6"];
+  const counts = order.map((b) => ({ b, n: aps.filter((a) => a.b === b).length })).filter((x) => x.n);
+  const total = counts.reduce((s, x) => s + x.n, 0) || 1;
+  $("bandbar").innerHTML = counts.map((x) =>
+    `<i style="flex:${x.n};background:var(${bandVar(x.b)})" title="${bandLabel(x.b)}: ${x.n}">${x.n / total > 0.08 ? x.n : ""}</i>`
+  ).join("");
+  $("bandleg").innerHTML = counts.map((x) =>
+    `<span><i class="swatch" style="background:var(${bandVar(x.b)})"></i>${bandLabel(x.b)} · ${x.n}</span>`
+  ).join("");
+}
+function renderSecurity(aps) {
+  const p = posture(aps);
+  const rows = [
+    { lab: "WPA3", n: p.wpa3, st: "good" },
+    { lab: "WPA2", n: p.wpa2, st: "good" },
+    { lab: "WPA (old)", n: p.wpa1, st: "warn" },
+    { lab: "Enterprise", n: p.ent, st: "neutral" },
+    { lab: "WEP", n: p.wep, st: "crit" },
+    { lab: "Open", n: p.open, st: "crit" },
+  ];
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  $("secbars").innerHTML = rows.map((r) => {
+    const v = r.st === "neutral" ? "--neutral" : statusVar(r.st);
+    const pct = (r.n / max) * 100;
+    return `<div class="barrow"><span class="lab">${esc(r.lab)}</span>` +
+      `<span class="track"><i style="width:${pct.toFixed(1)}%;background:var(${v})"></i></span>` +
+      `<span class="n">${r.n}</span></div>`;
+  }).join("");
+  const weak = p.open + p.wep;
+  $("secnote").textContent = weak
+    ? `${weak} network(s) offer no real encryption (Open or WEP). Enterprise (802.1X) also needs a username, not just a password.`
+    : `No Open or WEP networks here. Enterprise (802.1X) networks need a username as well as a password.`;
+}
+function renderRoaming(aps) {
+  const groups = roamingGroups(aps);
+  $("roampanel").hidden = groups.length === 0;
+  $("roam").innerHTML = groups.map((g) =>
+    `<div class="r"><span class="nm">${esc(g.ssid)}</span>` +
+    `<span class="chip">${g.radios} radios</span>` +
+    `<span class="places">${esc(g.places.join("  ·  "))}</span></div>`
+  ).join("");
+}
+function renderTable(aps) {
+  const rows = [...aps].sort((a, b) => b.dbm - a.dbm);
+  let h = `<thead><tr><th>Network</th><th>Band</th><th class="num">Ch</th><th class="num">Width</th><th class="num">Signal</th><th>Security</th></tr></thead><tbody>`;
+  for (const a of rows) {
+    const sc = secClass(a.security);
+    h += `<tr><td class="ssid">${esc(a.ssid)}</td>` +
+      `<td><span class="dot" style="background:var(${bandVar(a.b)})"></span>${bandLabel(a.b)}</td>` +
+      `<td class="num">${a.channel || "—"}</td>` +
+      `<td class="num">${a.width} MHz</td>` +
+      `<td class="num">~${a.dbm}${a.pct != null ? " (" + a.pct + "%)" : ""}</td>` +
+      `<td><span class="dot" style="background:var(${sc.status === "good" ? "--good" : sc.status === "warn" ? "--warn" : "--crit"})"></span>${esc(a.security)}</td></tr>`;
+  }
+  $("aptable").innerHTML = h + `</tbody>`;
+}
+
+function renderLegend24(aps) {
+  const present = ["2.4", "5", "6"].filter((b) => aps.some((a) => a.b === b));
+  $("leg24").innerHTML = present.map((b) =>
+    `<span><i class="swatch" style="background:var(${bandVar(b)})"></i>${bandLabel(b)}</span>`
+  ).join("") + `<span style="color:var(--muted)">taller = stronger · wider = broader channel · hover for detail</span>`;
+}
+
+function renderAll() {
+  const aps = STATE.aps;
+  const range = signalRange(aps);
+  renderTiles(aps);
+  renderLegend24(aps);
+  const has24 = aps.some((a) => a.b === "2.4");
+  const has5 = aps.some((a) => a.b === "5");
+  const has6 = aps.some((a) => a.b === "6");
+  $("panel24").hidden = !has24;
+  $("panel5").hidden = !has5;
+  $("panel6").hidden = !has6;
+  if (has24) spectrumSVG(aps, "2.4", "spec24", range);
+  if (has5) spectrumSVG(aps, "5", "spec5", range);
+  if (has6) spectrumSVG(aps, "6", "spec6", range);
+  renderBands(aps);
+  renderSecurity(aps);
+  renderRoaming(aps);
+  renderTable(aps);
+}
+
+function load(list, remember) {
+  STATE.aps = normalize(list);
+  renderAll();
+  if (remember) { try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch (_) {} }
+}
+
+/* ---- input handling ---- */
+$("render-btn").addEventListener("click", () => {
+  const raw = $("json-input").value.trim();
+  const err = $("input-err");
+  if (!raw) { err.textContent = "Paste some scan --json output first."; return; }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (e) { err.textContent = "That isn't valid JSON: " + e.message; return; }
+  if (!Array.isArray(parsed)) { err.textContent = "Expected a JSON array of access points (that's what scan --json prints)."; return; }
+  const good = parsed.filter((x) => x && typeof x === "object" && ("freq_mhz" in x || "channel" in x));
+  if (!good.length) { err.textContent = "No access-point objects found in that array."; return; }
+  err.textContent = "";
+  $("asof").textContent = "your scan · " + good.length + " APs";
+  load(good, true);
+});
+$("reset-btn").addEventListener("click", () => {
+  $("json-input").value = ""; $("input-err").textContent = "";
+  $("asof").textContent = "sample capture";
+  try { localStorage.removeItem(LS_KEY); } catch (_) {}
+  load(SAMPLE, false);
+});
+
+/* re-measure spectra on resize (crisp text at any width) */
+let rt;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(renderAll, 150); });
+
+/* boot: restore a remembered scan if present, else the sample */
+(function boot() {
+  let initial = SAMPLE, asof = "sample capture";
+  try {
+    const saved = localStorage.getItem(LS_KEY);
+    if (saved) {
+      const p = JSON.parse(saved);
+      if (Array.isArray(p) && p.length) { initial = p; asof = "your scan · " + p.length + " APs"; }
+    }
+  } catch (_) {}
+  $("asof").textContent = asof;
+  load(initial, false);
+})();
+</script>
+</body>
+</html>
