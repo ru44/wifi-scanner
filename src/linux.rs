@@ -5,7 +5,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{Attempt, Network};
+use crate::types::{Attempt, Network};
 
 /// How the password reaches nmcli. `Stdin` (via `--ask`) keeps it off argv;
 /// `Argv` is the legacy path, visible to `ps` and in journald.
