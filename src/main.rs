@@ -12,12 +12,12 @@
 //! access points were visible at the time (the "crowd" covariate).
 //!
 //! Consent and final state:
-//!   `bench` refuses to run unless you either type `I own these networks`
-//!   on an interactive terminal, or pass `--authorized`. It also, by
-//!   default, finishes with a connected Wi-Fi interface on a network from
-//!   your allow-list and prints the live `nmcli` connection state so it is
-//!   unambiguous which network the tool is on. Pass `--leave-disconnected`
-//!   to clean up and exit offline instead.
+//!   `bench` refuses to run unless you either type `allow`
+//!   on an interactive terminal, or pass `--authorized`. It also finishes
+//!   with a connected Wi-Fi interface whenever a benchmark-verified SSID is
+//!   reachable, prints the live `nmcli` connection state, and forgets every
+//!   allow-listed profile except the one it is currently connected to.
+//!   Pass `--leave-disconnected` to clean up and exit offline instead.
 //!
 //! Bench options:
 //!   --repeats N           repeat the allowlist N times (default: 1)
@@ -64,7 +64,7 @@ pub struct Attempt {
 }
 
 const SSID_FILE: &str = "lab-ssids.txt";
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -313,19 +313,15 @@ fn run_bench(opts: BenchOptions) -> Result<(), String> {
 
     print_report(&rows, total);
 
-    let first_success_ssid: Option<String> =
-        rows.iter().find(|r| r.ok).map(|r| r.ssid.clone());
-
-    if opts.leave_disconnected {
-        for row in &rows {
-            if row.ok {
-                platform::cleanup(&row.ssid);
-            }
+    // SSIDs the benchmark actually authenticated, dedup'd, in first-success order.
+    let mut succeeded: Vec<String> = Vec::new();
+    for row in &rows {
+        if row.ok && !succeeded.contains(&row.ssid) {
+            succeeded.push(row.ssid.clone());
         }
-        print_final_disconnected();
-    } else {
-        report_final_connection(&ssids, first_success_ssid.as_deref(), &password, delivery);
     }
+
+    finalize(&opts, &ssids, &succeeded, &password, delivery);
 
     Ok(())
 }
@@ -359,71 +355,186 @@ fn confirm_authorized() -> Result<(), String> {
     eprintln!(
         "Only continue if you own or are authorized to test every network in the allow-list."
     );
-    eprint!("Type exactly `I own these networks` to proceed: ");
+    eprint!("Type exactly `allow` to proceed: ");
     io::stderr().flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
     io::stdin()
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
-    if line.trim() != "I own these networks" {
+    if line.trim() != "allow" {
         return Err("authorization not confirmed; aborting".to_string());
     }
     Ok(())
 }
 
-fn print_final_disconnected() {
-    println!();
-    println!("── Final state ─────────────────────────────────────────────");
-    println!("  Cleaned up and left disconnected (--leave-disconnected).");
-    println!("────────────────────────────────────────────────────────────");
-}
+// --- final state ---------------------------------------------------------
 
-/// Ensures the process ends on an allow-listed network and prints the live
-/// `nmcli` connection state, so the tool's final state is unambiguous.
-fn report_final_connection(
-    ssids: &[String],
-    first_success: Option<&str>,
+/// Ends the run on a benchmark-verified SSID when possible, forgets every
+/// allow-list profile except the one we are connected to, and prints an
+/// honest final-state block.
+///
+/// "Verified" means *this run's* attempts authenticated the network. Being
+/// in the allow-list is not enough: `scan` writes every visible SSID to the
+/// file, including open networks (printers in DIRECT-* mode, cafés) that
+/// `nmcli` will happily "authenticate" without using the password at all.
+fn finalize(
+    opts: &BenchOptions,
+    allow_list: &[String],
+    succeeded: &[String],
     password: &str,
     delivery: platform::PasswordDelivery,
 ) {
-    println!();
-    println!("── Final state ─────────────────────────────────────────────");
-
-    let mut connected_to_allowlisted = false;
-    match platform::active_connection() {
-        Ok(Some((ssid, device))) => {
-            if ssids.iter().any(|s| s == &ssid) {
-                println!("  ✔ Connected to authorized lab network: {ssid} (device {device})");
-                connected_to_allowlisted = true;
-            } else {
-                println!("  Connected to {ssid} (device {device}); not in the allow-list.");
-            }
+    if opts.leave_disconnected {
+        for ssid in allow_list {
+            platform::cleanup(ssid);
         }
-        Ok(None) => {}
-        Err(e) => println!("  ⚠ Could not read active connection: {e}"),
+        let active = platform::active_connection().ok().flatten();
+        print_final_disconnected(active);
+        return;
     }
 
-    if !connected_to_allowlisted {
-        if let Some(target) = first_success {
-            println!("  Reconnecting to allow-listed `{target}` to leave a clear end state…");
-            let attempt = platform::connect(target, password, ATTEMPT_TIMEOUT, delivery);
-            if attempt.ok {
-                match platform::active_connection() {
-                    Ok(Some((ssid, device))) => {
+    // If we're not already on a benchmark-verified SSID, try to get there.
+    ensure_benchmark_connected(succeeded, password, delivery);
+
+    // Forget every allow-list profile except the one we're currently on.
+    // The active connection is preserved; every other lab network the bench
+    // may have touched (or that was already stored) is removed.
+    let active = platform::active_connection().ok().flatten();
+    let active_ssid = active.as_ref().map(|(s, _)| s.as_str());
+    for ssid in allow_list {
+        if Some(ssid.as_str()) != active_ssid {
+            platform::cleanup(ssid);
+        }
+    }
+
+    let active = platform::active_connection().ok().flatten();
+    let security = security_map();
+    print_final_state(allow_list, succeeded, active, &security);
+}
+
+/// If NetworkManager is not on a benchmark-verified SSID, walk the successes
+/// in order and connect to the first one that takes. Targets that went
+/// offline during the run are skipped with a warning.
+fn ensure_benchmark_connected(
+    succeeded: &[String],
+    password: &str,
+    delivery: platform::PasswordDelivery,
+) {
+    let on_verified = || {
+        platform::active_connection()
+            .ok()
+            .flatten()
+            .map_or(false, |(s, _)| succeeded.iter().any(|x| x == &s))
+    };
+
+    if on_verified() {
+        return;
+    }
+
+    for target in succeeded {
+        eprintln!("  Reconnecting to benchmark-verified `{target}` …");
+        let attempt = platform::connect(target, password, ATTEMPT_TIMEOUT, delivery);
+        if attempt.ok && on_verified() {
+            return;
+        }
+        if !attempt.ok {
+            eprintln!("  ⚠ Could not reconnect to `{target}`: {}", attempt.detail);
+        }
+    }
+}
+
+/// Best-effort map of SSID → security string from nmcli's current view.
+/// Triggers a rescan, which can take a couple of seconds; called once.
+fn security_map() -> HashMap<String, String> {
+    match platform::scan() {
+        Ok(networks) => strongest_per_name(networks)
+            .into_iter()
+            .map(|n| (n.ssid, n.security))
+            .collect(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn print_final_state(
+    allow_list: &[String],
+    succeeded: &[String],
+    active: Option<(String, String)>,
+    security: &HashMap<String, String>,
+) {
+    println!();
+    println!("── Final state ─────────────────────────────────────────────");
+    match active {
+        Some((ssid, device)) => {
+            let is_verified = succeeded.iter().any(|s| s == &ssid);
+            let in_allow_list = allow_list.iter().any(|s| s == &ssid);
+            let security_str = security.get(&ssid).map(String::as_str);
+
+            if is_verified {
+                match security_str {
+                    Some("Open") => {
+                        println!("  ⚠ Connected to `{ssid}` (device {device}).");
+                        println!("    This network is OPEN. Your password was not");
+                        println!("    actually verified during the benchmark.");
+                    }
+                    Some(_) => {
                         println!(
                             "  ✔ Connected to authorized lab network: {ssid} (device {device})"
                         );
+                        println!("    (benchmark authenticated this network during the run)");
                     }
-                    _ => println!("  ✔ Reconnected to `{target}` (could not confirm device)"),
+                    None => {
+                        println!("  ✔ Connected to `{ssid}` (device {device}).");
+                        println!("    Benchmark authenticated this network, but its");
+                        println!("    security could not be re-checked right now.");
+                    }
+                }
+            } else if in_allow_list {
+                println!("  ⚠ Connected to `{ssid}` (device {device}).");
+                println!("    It is in the allow-list, but the benchmark did NOT");
+                println!("    authenticate it. NetworkManager auto-reconnected.");
+                if succeeded.is_empty() {
+                    println!("    No benchmark attempt succeeded at all.");
+                } else {
+                    println!("    Benchmark succeeded on: {}", succeeded.join(", "));
+                    println!("    (but could not reconnect; targets may be offline).");
                 }
             } else {
-                println!("  ⚠ Could not reconnect to `{target}`: {}", attempt.detail);
+                println!("  ⚠ Connected to `{ssid}` (device {device}).");
+                println!("    This network is NOT in the allow-list and was not tested.");
+                if !succeeded.is_empty() {
+                    println!("    Benchmark succeeded on: {}", succeeded.join(", "));
+                }
             }
-        } else {
-            println!("  ⚠ No successful attempt to reconnect to; leaving the connection as-is.");
+        }
+        None => {
+            println!("  ⚠ Not connected to any Wi-Fi network.");
+            if succeeded.is_empty() {
+                println!("    No benchmark attempt succeeded, so there is nothing to");
+                println!("    reconnect to.");
+            } else {
+                println!("    Benchmark succeeded on: {}", succeeded.join(", "));
+                println!("    but reconnecting to it failed (target may be offline).");
+            }
         }
     }
+    println!("────────────────────────────────────────────────────────────");
+}
 
+fn print_final_disconnected(active: Option<(String, String)>) {
+    println!();
+    println!("── Final state ─────────────────────────────────────────────");
+    match active {
+        None => {
+            println!("  ✔ Not connected to any Wi-Fi network.");
+            println!("    (--leave-disconnected: allow-list profiles removed.)");
+        }
+        Some((ssid, device)) => {
+            println!("  ⚠ Still connected to `{ssid}` (device {device}).");
+            println!("    It is not in the allow-list, so --leave-disconnected did");
+            println!("    not disconnect from it. Run `nmcli device disconnect {device}`");
+            println!("    if you want to drop that connection too.");
+        }
+    }
     println!("────────────────────────────────────────────────────────────");
 }
 

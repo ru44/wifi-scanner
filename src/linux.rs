@@ -89,7 +89,8 @@ fn parse_active(line: &str) -> Option<(String, String)> {
 
 /// Best-effort tear-down of any connection and profile named after `ssid`.
 /// Called before each attempt so nmcli prompts for the password again, and
-/// once at the end so we do not leave a stored profile behind.
+/// at the end so we do not leave a stored profile behind for networks the
+/// benchmark did not authenticate.
 pub fn cleanup(ssid: &str) {
     // nmcli refuses to delete an active profile, so bring it down first.
     let _ = Command::new("nmcli")
