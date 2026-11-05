@@ -2,7 +2,7 @@
 name = "wifi-scanner"
 version = "0.1.0"
 edition = "2024"
-description = "Lists nearby Wi-Fi networks on Linux, for when you have the password but not the name."
+description = "Read and understand the Wi-Fi around you on Linux: scan, analyze the airspace, inspect your link, and monitor signal over time."
 license = "MIT"
 
 [dependencies]

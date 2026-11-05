@@ -33,7 +33,7 @@ pub(crate) fn strongest_per_name(networks: Vec<Network>) -> Vec<Network> {
 
 /// Replaces control characters with the Unicode replacement character and
 /// drops NULs, so a hostile SSID cannot drive the terminal when printed.
-fn printable_name(name: &str) -> String {
+pub(crate) fn printable_name(name: &str) -> String {
     name.chars()
         .filter(|c| *c != '\0')
         .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
@@ -47,8 +47,14 @@ mod tests {
     fn network(ssid: &str, signal: u8) -> Network {
         Network {
             ssid: ssid.to_string(),
+            bssid: String::new(),
             signal,
             security: "WPA2".to_string(),
+            mode: "Infra".to_string(),
+            channel: 0,
+            freq_mhz: 2437,
+            bandwidth_mhz: 20,
+            rate_mbps: 0,
         }
     }
 
