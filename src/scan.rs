@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use crate::SSID_FILE;
 use crate::json;
-use crate::netlist::strongest_per_name;
+use crate::netlist::{printable_name, strongest_per_name};
 use crate::platform;
 use crate::types::{Network, rssi_label};
 
@@ -27,18 +27,27 @@ pub(crate) fn cmd_scan(args: &[String]) -> ExitCode {
         eprintln!("Scanning for Wi-Fi networks...");
     }
 
-    let networks = match platform::scan() {
-        Ok(networks) => strongest_per_name(networks),
+    let raw = match platform::scan() {
+        Ok(networks) => networks,
         Err(message) => {
             eprintln!("Error: {message}");
             return ExitCode::FAILURE;
         }
     };
 
+    // `--json` is a lossless feed: every access point, one record per BSSID
+    // (so roaming — one name on several radios — is visible downstream). The
+    // human table below instead collapses to the strongest per name.
     if as_json {
-        print_json(&networks);
+        let mut all = raw;
+        for n in &mut all {
+            n.ssid = printable_name(&n.ssid);
+        }
+        print_json(&all);
         return ExitCode::SUCCESS;
     }
+
+    let networks = strongest_per_name(raw);
 
     if networks.is_empty() {
         println!("No Wi-Fi networks found. Is Wi-Fi turned on?");
