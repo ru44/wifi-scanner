@@ -86,7 +86,7 @@ Linux with **NetworkManager** (`nmcli`) — most desktop distributions include i
 
 ## Get it
 
-Download `wifi-scanner-linux-x86_64` from the [Releases](https://github.com/ru44/wifi-scanner/releases) page, or build it with [Rust](https://rustup.rs) (no third-party dependencies):
+Build it with [Rust](https://rustup.rs) (no third-party dependencies):
 
 ```sh
 git clone https://github.com/ru44/wifi-scanner
