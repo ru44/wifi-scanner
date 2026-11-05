@@ -11,40 +11,16 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            asset: wifi-scanner-linux-x86_64
-          - os: windows-latest
-            asset: wifi-scanner-windows-x86_64.exe
-          - os: macos-latest
-            asset: wifi-scanner-macos-arm64.zip
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: cargo test --locked
       - run: cargo build --release --locked
-
-      - name: Package Linux binary
-        if: runner.os == 'Linux'
-        run: cp target/release/wifi-scanner "${{ matrix.asset }}"
-      - name: Package Windows binary
-        if: runner.os == 'Windows'
-        run: cp target/release/wifi-scanner.exe "${{ matrix.asset }}"
-      - name: Package macOS app
-        if: runner.os == 'macOS'
-        run: |
-          scripts/bundle-macos.sh
-          plutil -lint target/WifiScanner.app/Contents/Info.plist
-          codesign --verify --verbose target/WifiScanner.app
-          ditto -c -k --keepParent target/WifiScanner.app "${{ matrix.asset }}"
-
+      - run: cp target/release/wifi-scanner wifi-scanner-linux-x86_64
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          name: wifi-scanner-linux-x86_64
+          path: wifi-scanner-linux-x86_64
           if-no-files-found: error
 
   release:
