@@ -1,0 +1,14 @@
+[package]
+name = "wifi-scanner"
+version = "0.1.0"
+edition = "2024"
+description = "Lists nearby Wi-Fi networks on Linux, macOS and Windows, for when you have the password but not the name."
+license = "MIT"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WiFi"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-location = { version = "0.3.2", features = ["CLLocationManager"] }
+objc2-core-wlan = "0.3.2"
+objc2-foundation = { version = "0.3.2", features = ["NSBundle", "NSDate", "NSError", "NSRunLoop", "NSSet", "NSString"] }
