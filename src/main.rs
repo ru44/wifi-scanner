@@ -69,6 +69,7 @@ mod analyze;
 mod bench;
 mod csv_out;
 mod finalize;
+mod interrupt;
 mod json;
 mod link;
 mod linux;

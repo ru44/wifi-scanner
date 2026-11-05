@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::process::ExitCode;
-use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::csv_out::csv_escape;
+use crate::interrupt;
 use crate::netlist::printable_name;
 use crate::platform;
 use crate::types::{Band, Network, rssi_label};
@@ -103,11 +103,21 @@ fn run(opts: Options) -> Result<(), String> {
         None => None,
     };
 
+    // Ctrl-C stops the loop after the current round rather than killing the
+    // process mid-render; a second Ctrl-C force-quits.
+    interrupt::install();
+    let started = Instant::now();
+
     let mut round = 0u64;
     loop {
         round += 1;
 
-        let mut networks = platform::scan()?;
+        let mut networks = match platform::scan() {
+            Ok(networks) => networks,
+            // A scan interrupted by Ctrl-C is a clean stop, not an error.
+            Err(_) if interrupt::interrupted() => break,
+            Err(message) => return Err(message),
+        };
         for n in &mut networks {
             n.ssid = printable_name(&n.ssid);
         }
@@ -132,12 +142,38 @@ fn run(opts: Options) -> Result<(), String> {
         render(round, &opts, &networks, &tracks, &appeared, &vanished);
 
         previous = current;
+        if interrupt::interrupted() {
+            break;
+        }
         if opts.rounds != 0 && round >= opts.rounds {
             break;
         }
-        thread::sleep(opts.interval);
+        interrupt::sleep_or_interrupt(opts.interval);
+        if interrupt::interrupted() {
+            break;
+        }
     }
+
+    print_summary(round, started.elapsed(), tracks.len(), &opts);
     Ok(())
+}
+
+fn print_summary(rounds: u64, elapsed: Duration, aps_seen: usize, opts: &Options) {
+    println!();
+    if interrupt::interrupted() {
+        println!(
+            "Stopped (Ctrl-C) after {rounds} round(s) over {}s; {aps_seen} access point(s) seen.",
+            elapsed.as_secs()
+        );
+    } else {
+        println!(
+            "Done: {rounds} round(s) over {}s; {aps_seen} access point(s) seen.",
+            elapsed.as_secs()
+        );
+    }
+    if let Some(path) = &opts.csv_path {
+        println!("Samples written to {path}.");
+    }
 }
 
 fn update_track(tracks: &mut HashMap<String, Track>, n: &Network) {
@@ -176,7 +212,7 @@ fn render(
     }
 
     let stop = if opts.rounds == 0 {
-        "Ctrl-C to stop".to_string()
+        "Ctrl-C to stop (again to force)".to_string()
     } else {
         format!("round {round}/{}", opts.rounds)
     };
